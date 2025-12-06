@@ -1,15 +1,25 @@
 # ProxyPal
 
-A desktop app that lets you use your AI subscriptions (Claude, ChatGPT, Gemini, GitHub Copilot) with any coding tool. Wraps [CLIProxyAPI](https://github.com/nexon33/CLIProxyAPI) with a clean UI for managing connections and tracking usage.
+Use your AI subscriptions (Claude, ChatGPT, Gemini, GitHub Copilot) with any coding tool. Native desktop app wrapping [CLIProxyAPI](https://github.com/router-for-me/CLIProxyAPI).
+
+![ProxyPal Dashboard](src/assets/dashboard.png)
 
 ## Features
 
-- **One-click OAuth** - Connect Claude, ChatGPT, Gemini, GitHub Copilot, and more
-- **Works with any tool** - Cursor, Windsurf, Continue, Claude Code, OpenCode, etc.
-- **Copilot proxy support** - Built-in bridge for GitHub Copilot APIs not available in CLIProxyAPI
-- **Track savings** - See how much you're saving vs API costs
-- **Request history** - Monitor all AI requests through the proxy
-- **Auto-configure** - Detects installed CLI agents and configures them automatically
+- **Multiple AI Providers** - Connect Claude, ChatGPT, Gemini, Qwen, iFlow, Vertex AI, and custom OpenAI-compatible endpoints
+- **GitHub Copilot Bridge** - Use Copilot models via OpenAI-compatible API
+- **Antigravity Support** - Access thinking models through Antigravity proxy
+- **Works Everywhere** - Cursor, Cline, Continue, Claude Code, OpenCode, and any OpenAI-compatible client
+- **Usage Analytics** - Track requests, tokens, success rates, and estimated savings
+- **Request Monitoring** - View all API requests with response times and status codes
+- **Auto-Configure** - Detects installed CLI agents and sets them up automatically
+
+## Quick Start
+
+1. Download from [Releases](https://github.com/heyhuynhgiabuu/proxypal/releases)
+2. Launch ProxyPal and start the proxy
+3. Connect your AI accounts (OAuth or auth files)
+4. Point your coding tool to `http://localhost:8317/v1`
 
 ## Supported Platforms
 
@@ -20,24 +30,11 @@ A desktop app that lets you use your AI subscriptions (Claude, ChatGPT, Gemini, 
 | Windows  | x64                   | ✅     |
 | Linux    | x64 (.deb)            | ✅     |
 
-## Quick Start
-
-1. Download the latest release from [Releases](https://github.com/heyhuynhgiabuu/proxypal/releases)
-2. Start the proxy (toggle in header)
-3. Connect your AI account(s)
-4. Configure your coding tool to use `http://localhost:9090/v1`
-
 ## Development
 
 ```bash
-# Install dependencies
 pnpm install
-
-# Run in development
 pnpm tauri dev
-
-# Build for production
-pnpm tauri build
 ```
 
 ## Tech Stack
