@@ -34,6 +34,12 @@ const providers = [
 		description: "Google's Gemini models via Gemini CLI",
 	},
 	{
+		name: "GitHub Copilot",
+		provider: "copilot" as Provider,
+		logo: "/logos/copilot.svg",
+		description: "Claude, GPT, Gemini & more via GitHub Copilot subscription",
+	},
+	{
 		name: "Qwen",
 		provider: "qwen" as Provider,
 		logo: "/logos/qwen.png",
@@ -186,6 +192,7 @@ export function WelcomePage() {
 			status.claude ||
 			status.openai ||
 			status.gemini ||
+			status.copilot ||
 			status.qwen ||
 			status.iflow ||
 			status.vertex ||

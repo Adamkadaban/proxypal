@@ -9,6 +9,7 @@ pub struct AuthStatus {
     pub iflow: u32,
     pub vertex: u32,
     pub antigravity: u32,
+    pub copilot: u32,
 }
 
 impl Default for AuthStatus {
@@ -21,6 +22,7 @@ impl Default for AuthStatus {
             iflow: 0,
             vertex: 0,
             antigravity: 0,
+            copilot: 0,
         }
     }
 }

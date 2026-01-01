@@ -28,7 +28,8 @@ export type Provider =
 	| "qwen"
 	| "iflow"
 	| "vertex"
-	| "antigravity";
+	| "antigravity"
+	| "copilot";
 
 export async function openOAuth(provider: Provider): Promise<string> {
 	return invoke("open_oauth", { provider });
@@ -65,6 +66,7 @@ export interface AuthStatus {
 	iflow: number;
 	vertex: number;
 	antigravity: number;
+	copilot: number;
 }
 
 export async function getAuthStatus(): Promise<AuthStatus> {
@@ -385,6 +387,29 @@ export async function onCopilotAuthRequired(
 	});
 }
 
+// Copilot device code event (for OAuth flow)
+export interface CopilotDeviceCode {
+	userCode: string;
+	verificationUri: string;
+	expiresAt: number;
+}
+
+export async function onCopilotDeviceCode(
+	callback: (deviceCode: CopilotDeviceCode) => void,
+): Promise<UnlistenFn> {
+	return listen<CopilotDeviceCode>("copilot-device-code", (event) => {
+		callback(event.payload);
+	});
+}
+
+export async function onCopilotConnected(
+	callback: (data: { user: string }) => void,
+): Promise<UnlistenFn> {
+	return listen<{ user: string }>("copilot-connected", (event) => {
+		callback(event.payload);
+	});
+}
+
 // System notifications
 import {
 	isPermissionGranted,
@@ -445,6 +470,7 @@ export interface ProviderHealth {
 	iflow: HealthStatus;
 	vertex: HealthStatus;
 	antigravity: HealthStatus;
+	copilot: HealthStatus;
 }
 
 export async function checkProviderHealth(): Promise<ProviderHealth> {

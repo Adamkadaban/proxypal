@@ -14,6 +14,7 @@ use crate::types::{
     UsageStats, TimeSeriesPoint, ModelUsage, ProviderUsage, RequestHistory,
     Aggregate, ModelStats,
     CopilotStatus, CopilotApiDetection, CopilotApiInstallResult,
+    CopilotOAuthState, CopilotCredential, GitHubDeviceCodeResponse, GitHubAccessTokenResponse,
     ClaudeApiKey, GeminiApiKey, CodexApiKey, OpenAICompatibleProvider,
     ThinkingBudgetSettings, ReasoningEffortSettings,
     AuthFile, LogEntry, DetectedTool, AgentStatus,
@@ -1294,14 +1295,14 @@ async fn start_copilot(
             copilot_bin,
             detection.version.as_ref().map(|v| format!(" v{}", v)).unwrap_or_default());
         (copilot_bin, vec![])
+    } else if let Some(bunx_bin) = detection.bunx_bin.clone() {
+        // Prefer bunx - it's faster and doesn't require a specific Node.js version
+        println!("[copilot] Found bunx at: {}", bunx_bin);
+        (bunx_bin, vec!["copilot-api@latest".to_string()])
     } else if let Some(npx_bin) = detection.npx_bin.clone() {
-        // Prefer npx over bunx for downloading packages (more reliable)
+        // Fallback to npx (requires Node.js >= 22.3.0 for process.getBuiltinModule)
         println!("[copilot] Using npx: {} copilot-api@latest", npx_bin);
         (npx_bin, vec!["copilot-api@latest".to_string()])
-    } else if let Some(bunx_bin) = detection.bunx_bin.clone() {
-        // Fallback to bunx
-        println!("[copilot] Using bunx: {} copilot-api@latest", bunx_bin);
-        (bunx_bin, vec!["copilot-api@latest".to_string()])
     } else {
         return Err(
             "Neither npx nor bunx found (required to run copilot-api).\n\n\
@@ -1339,7 +1340,21 @@ async fn start_copilot(
     
     println!("[copilot] Executing: {} {}", bin_path, args.join(" "));
     
-    let command = app.shell().command(&bin_path).args(&args);
+    // Build the command with proper PATH to ensure correct Node.js version is used
+    let mut command = app.shell().command(&bin_path).args(&args);
+    
+    // If we detected a specific node_bin path (e.g., from nvm), add its directory to PATH
+    // This ensures bunx/npx use the correct Node.js version
+    if let Some(ref node_path) = detection.node_bin {
+        if let Some(node_dir) = std::path::Path::new(node_path).parent() {
+            let node_dir_str = node_dir.to_string_lossy();
+            // Get current PATH and prepend the node directory
+            let current_path = std::env::var("PATH").unwrap_or_default();
+            let new_path = format!("{}:{}", node_dir_str, current_path);
+            command = command.env("PATH", new_path);
+            println!("[copilot] Set PATH to include: {}", node_dir_str);
+        }
+    }
     
     let (mut rx, child) = command.spawn().map_err(|e| format!("Failed to spawn copilot-api: {}. Make sure Node.js is installed.", e))?;
     
@@ -2723,8 +2738,18 @@ async fn import_usage_stats(state: State<'_, AppState>, data: serde_json::Value)
     Ok(body)
 }
 
+// GitHub Copilot OAuth constants (from copilot-api reference)
+const GITHUB_CLIENT_ID: &str = "Iv1.b507a08c87ecfe98";
+const GITHUB_APP_SCOPES: &str = "read:user";
+const GITHUB_BASE_URL: &str = "https://github.com";
+
 #[tauri::command]
 async fn open_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider: String) -> Result<String, String> {
+    // Handle Copilot separately with native device code flow
+    if provider == "copilot" {
+        return open_copilot_oauth(app, state).await;
+    }
+    
     // Get proxy port from config
     let port = {
         let config = state.config.lock().unwrap();
@@ -2792,8 +2817,92 @@ async fn open_oauth(app: tauri::AppHandle, state: State<'_, AppState>, provider:
     Ok(oauth_state)
 }
 
+// Handle Copilot OAuth with native GitHub device code flow
+async fn open_copilot_oauth(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<String, String> {
+    let client = reqwest::Client::new();
+    
+    // Step 1: Request device code from GitHub
+    let device_code_url = format!("{}/login/device/code", GITHUB_BASE_URL);
+    let response = client
+        .post(&device_code_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&serde_json::json!({
+            "client_id": GITHUB_CLIENT_ID,
+            "scope": GITHUB_APP_SCOPES,
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to request device code: {}", e))?;
+    
+    if !response.status().is_success() {
+        let error_text = response.text().await.unwrap_or_default();
+        return Err(format!("GitHub device code request failed: {}", error_text));
+    }
+    
+    let device_code_response: GitHubDeviceCodeResponse = response
+        .json()
+        .await
+        .map_err(|e| format!("Failed to parse device code response: {}", e))?;
+
+    // Calculate expiration time
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let expires_at = now + device_code_response.expires_in;
+    
+    // Store the pending OAuth state
+    {
+        let mut pending = state.pending_copilot_oauth.lock().unwrap();
+        *pending = Some(CopilotOAuthState {
+            device_code: device_code_response.device_code.clone(),
+            user_code: device_code_response.user_code.clone(),
+            verification_uri: device_code_response.verification_uri.clone(),
+            expires_at,
+            interval: device_code_response.interval,
+        });
+    }
+    
+    // Also store in pending_oauth for compatibility
+    {
+        let mut pending = state.pending_oauth.lock().unwrap();
+        *pending = Some(OAuthState {
+            provider: "copilot".to_string(),
+            state: device_code_response.device_code.clone(),
+        });
+    }
+    
+    // Open the verification URL in the browser
+    app.opener()
+        .open_url(&device_code_response.verification_uri, None::<&str>)
+        .map_err(|e| e.to_string())?;
+    
+    // Emit an event to show the user code in the UI
+    let _ = app.emit("copilot-device-code", serde_json::json!({
+        "userCode": device_code_response.user_code,
+        "verificationUri": device_code_response.verification_uri,
+        "expiresAt": expires_at,
+    }));
+    
+    // Return the device code as the OAuth state for polling
+    Ok(device_code_response.device_code)
+}
+
 #[tauri::command]
-async fn poll_oauth_status(state: State<'_, AppState>, oauth_state: String) -> Result<bool, String> {
+async fn poll_oauth_status(app: tauri::AppHandle, state: State<'_, AppState>, oauth_state: String) -> Result<bool, String> {
+    // Check if this is a Copilot device code poll
+    let pending_copilot = {
+        state.pending_copilot_oauth.lock().unwrap().clone()
+    };
+
+    if let Some(copilot_state) = pending_copilot {
+        if copilot_state.device_code == oauth_state {
+            return poll_copilot_oauth(app, state, copilot_state).await;
+        }
+    }
+
+    // Standard OAuth polling via CLIProxyAPI
     let port = {
         let config = state.config.lock().unwrap();
         config.port
@@ -2826,6 +2935,147 @@ async fn poll_oauth_status(state: State<'_, AppState>, oauth_state: String) -> R
     Ok(status == "ok")
 }
 
+// Poll for Copilot OAuth completion using GitHub device code flow
+async fn poll_copilot_oauth(app: tauri::AppHandle, state: State<'_, AppState>, copilot_state: CopilotOAuthState) -> Result<bool, String> {
+    let client = reqwest::Client::new();
+
+    // Check if the device code has expired
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    
+    if now > copilot_state.expires_at {
+        // Clear the pending state
+        {
+            let mut pending = state.pending_copilot_oauth.lock().unwrap();
+            *pending = None;
+        }
+        return Err("Device code expired. Please try connecting again.".to_string());
+    }
+    
+    // Poll for access token
+    let token_url = format!("{}/login/oauth/access_token", GITHUB_BASE_URL);
+    let response = client
+        .post(&token_url)
+        .header("Content-Type", "application/json")
+        .header("Accept", "application/json")
+        .json(&serde_json::json!({
+            "client_id": GITHUB_CLIENT_ID,
+            "device_code": copilot_state.device_code,
+            "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+        }))
+        .send()
+        .await
+        .map_err(|e| format!("Failed to poll access token: {}", e))?;
+
+    if !response.status().is_success() {
+        return Ok(false); // Not ready yet
+    }
+
+    let response_text = response.text().await
+        .map_err(|e| format!("Failed to read response text: {}", e))?;
+
+    let token_response: GitHubAccessTokenResponse = serde_json::from_str(&response_text)
+        .map_err(|e| format!("Failed to parse token response: {}", e))?;
+
+    // Check for errors (authorization_pending, slow_down, etc.)
+    if let Some(error) = token_response.error {
+        match error.as_str() {
+            "authorization_pending" => {
+                return Ok(false); // User hasn't authorized yet
+            }
+            "slow_down" => {
+                // GitHub tells us the required interval in the response
+                let wait_secs = token_response.interval.unwrap_or(10);
+                // Wait the required interval before returning
+                tokio::time::sleep(tokio::time::Duration::from_secs(wait_secs)).await;
+                return Ok(false); // Should slow down polling
+            }
+            "expired_token" => {
+                let mut pending = state.pending_copilot_oauth.lock().unwrap();
+                *pending = None;
+                return Err("Device code expired. Please try connecting again.".to_string());
+            }
+            "access_denied" => {
+                let mut pending = state.pending_copilot_oauth.lock().unwrap();
+                *pending = None;
+                return Err("Access denied. User cancelled authorization.".to_string());
+            }
+            _ => {
+                return Err(format!("GitHub OAuth error: {} - {}", 
+                    error, 
+                    token_response.error_description.unwrap_or_default()));
+            }
+        }
+    }
+    
+    // We got an access token!
+    if let Some(access_token) = token_response.access_token {
+        // Get the GitHub user info
+        let user_response = client
+            .get("https://api.github.com/user")
+            .header("Authorization", format!("token {}", access_token))
+            .header("User-Agent", "ProxyPal")
+            .send()
+            .await
+            .map_err(|e| format!("Failed to get GitHub user: {}", e))?;
+        
+        let github_user: String = if user_response.status().is_success() {
+            let user_data: serde_json::Value = user_response.json().await.unwrap_or_default();
+            user_data["login"].as_str().unwrap_or("user").to_string()
+        } else {
+            "user".to_string()
+        };
+
+        // Save the credential to ~/.cli-proxy-api/copilot-{user}.json
+        let auth_dir = dirs::home_dir()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+            .join(".cli-proxy-api");
+        
+        // Ensure auth directory exists
+        let _ = std::fs::create_dir_all(&auth_dir);
+        
+        let credential = CopilotCredential {
+            github_token: access_token,
+            github_user: github_user.clone(),
+            created_at: now,
+        };
+        
+        let cred_path = auth_dir.join(format!("copilot-{}.json", github_user));
+        let cred_json = serde_json::to_string_pretty(&credential)
+            .map_err(|e| format!("Failed to serialize credential: {}", e))?;
+        std::fs::write(&cred_path, cred_json)
+            .map_err(|e| format!("Failed to save credential: {}", e))?;
+
+        // Clear the pending states
+        {
+            let mut pending = state.pending_copilot_oauth.lock().unwrap();
+            *pending = None;
+        }
+        {
+            let mut pending = state.pending_oauth.lock().unwrap();
+            *pending = None;
+        }
+        
+        // Update auth status
+        {
+            let mut auth = state.auth_status.lock().unwrap();
+            auth.copilot += 1;
+            let _ = save_auth_to_file(&auth);
+        }
+        
+        // Emit event
+        let _ = app.emit("copilot-connected", serde_json::json!({
+            "user": github_user,
+        }));
+        
+        return Ok(true);
+    }
+    
+    Ok(false)
+}
+
 #[tauri::command]
 async fn refresh_auth_status(app: tauri::AppHandle, state: State<'_, AppState>) -> Result<AuthStatus, String> {
     // Check CLIProxyAPI's auth directory for credentials
@@ -2848,6 +3098,7 @@ async fn refresh_auth_status(app: tauri::AppHandle, state: State<'_, AppState>) 
             // - iflow-{email}.json
             // - vertex-{project_id}.json
             // - antigravity-{email}.json
+            // - copilot-{user}.json
             
             if filename.ends_with(".json") {
                 if filename.starts_with("claude-") || filename.starts_with("anthropic-") {
@@ -2864,6 +3115,8 @@ async fn refresh_auth_status(app: tauri::AppHandle, state: State<'_, AppState>) 
                     new_auth.vertex += 1;
                 } else if filename.starts_with("antigravity-") {
                     new_auth.antigravity += 1;
+                } else if filename.starts_with("copilot-") {
+                    new_auth.copilot += 1;
                 }
             }
         }
@@ -2908,6 +3161,7 @@ async fn complete_oauth(
             "iflow" => auth.iflow += 1,
             "vertex" => auth.vertex += 1,
             "antigravity" => auth.antigravity += 1,
+            "copilot" => auth.copilot += 1,
             _ => return Err(format!("Unknown provider: {}", provider)),
         }
 
@@ -2950,6 +3204,7 @@ async fn disconnect_provider(
                     "iflow" => filename.starts_with("iflow-"),
                     "vertex" => filename.starts_with("vertex-"),
                     "antigravity" => filename.starts_with("antigravity-"),
+                    "copilot" => filename.starts_with("copilot-"),
                     _ => false,
                 };
                 
@@ -2972,6 +3227,7 @@ async fn disconnect_provider(
         "iflow" => auth.iflow = 0,
         "vertex" => auth.vertex = 0,
         "antigravity" => auth.antigravity = 0,
+        "copilot" => auth.copilot = 0,
         _ => return Err(format!("Unknown provider: {}", provider)),
     }
 
@@ -5085,7 +5341,8 @@ async fn check_provider_health(state: State<'_, AppState>) -> Result<ProviderHea
             qwen: offline_status.clone(),
             iflow: offline_status.clone(),
             vertex: offline_status.clone(),
-            antigravity: offline_status,
+            antigravity: offline_status.clone(),
+            copilot: offline_status,
         });
     }
     
@@ -5144,6 +5401,7 @@ async fn check_provider_health(state: State<'_, AppState>) -> Result<ProviderHea
         iflow: make_status(auth_status.iflow > 0),
         vertex: make_status(auth_status.vertex > 0),
         antigravity: make_status(auth_status.antigravity > 0),
+        copilot: make_status(auth_status.copilot > 0),
     })
 }
 
@@ -6192,6 +6450,7 @@ pub fn run() {
         auth_status: Mutex::new(auth),
         config: Mutex::new(config),
         pending_oauth: Mutex::new(None),
+        pending_copilot_oauth: Mutex::new(None),
         proxy_process: Mutex::new(None),
         copilot_status: Mutex::new(CopilotStatus::default()),
         copilot_process: Mutex::new(None),

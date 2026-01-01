@@ -42,6 +42,7 @@ function createAppStore() {
 		iflow: 0,
 		vertex: 0,
 		antigravity: 0,
+		copilot: 0,
 	});
 
 	// Config

@@ -3,7 +3,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicU64};
 use tauri_plugin_shell::process::CommandChild;
 
-use crate::types::{ProxyStatus, AuthStatus, OAuthState, CopilotStatus};
+use crate::types::{ProxyStatus, AuthStatus, OAuthState, CopilotStatus, CopilotOAuthState};
 use crate::config::AppConfig;
 
 /// App state shared across all Tauri commands
@@ -12,6 +12,7 @@ pub struct AppState {
     pub auth_status: Mutex<AuthStatus>,
     pub config: Mutex<AppConfig>,
     pub pending_oauth: Mutex<Option<OAuthState>>,
+    pub pending_copilot_oauth: Mutex<Option<CopilotOAuthState>>,
     pub proxy_process: Mutex<Option<CommandChild>>,
     pub copilot_status: Mutex<CopilotStatus>,
     pub copilot_process: Mutex<Option<CommandChild>>,
@@ -26,6 +27,7 @@ impl Default for AppState {
             auth_status: Mutex::new(AuthStatus::default()),
             config: Mutex::new(AppConfig::default()),
             pending_oauth: Mutex::new(None),
+            pending_copilot_oauth: Mutex::new(None),
             proxy_process: Mutex::new(None),
             copilot_status: Mutex::new(CopilotStatus::default()),
             copilot_process: Mutex::new(None),

@@ -10,6 +10,7 @@ pub struct ProviderHealth {
     pub iflow: HealthStatus,
     pub vertex: HealthStatus,
     pub antigravity: HealthStatus,
+    pub copilot: HealthStatus,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -77,3 +77,43 @@ pub struct CopilotApiInstallResult {
     pub message: String,
     pub version: Option<String>,
 }
+
+// GitHub Device Code Flow types
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubDeviceCodeResponse {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct GitHubAccessTokenResponse {
+    pub access_token: Option<String>,
+    pub token_type: Option<String>,
+    pub scope: Option<String>,
+    pub error: Option<String>,
+    pub error_description: Option<String>,
+    pub interval: Option<u64>,  // Returned with slow_down error
+}
+
+// Copilot OAuth state (stored during device code flow)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotOAuthState {
+    pub device_code: String,
+    pub user_code: String,
+    pub verification_uri: String,
+    pub expires_at: u64,
+    pub interval: u64,
+}
+
+// Copilot credential file (stored in ~/.cli-proxy-api/copilot-{user}.json)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CopilotCredential {
+    pub github_token: String,
+    pub github_user: String,
+    pub created_at: u64,
+}

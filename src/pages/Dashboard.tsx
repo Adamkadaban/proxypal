@@ -11,6 +11,7 @@ import {
 import { ApiEndpoint } from "../components/ApiEndpoint";
 import { openCommandPalette } from "../components/CommandPalette";
 import { CopilotCard } from "../components/CopilotCard";
+import { CopilotDeviceCodeModal } from "../components/CopilotDeviceCodeModal";
 import { BarChart } from "../components/charts/BarChart";
 import { HealthIndicator } from "../components/HealthIndicator";
 import { OpenCodeKitBanner } from "../components/OpenCodeKitBanner";
@@ -22,11 +23,14 @@ import {
 	type AvailableModel,
 	appendToShellProfile,
 	type CopilotConfig,
+	type CopilotDeviceCode,
 	detectCliAgents,
 	disconnectProvider,
 	fetchAntigravityQuota,
 	getUsageStats,
 	importVertexCredential,
+	onCopilotConnected,
+	onCopilotDeviceCode,
 	onRequestLog,
 	openOAuth,
 	type Provider,
@@ -49,6 +53,11 @@ const providers = [
 		logo: "/logos/openai.svg",
 	},
 	{ name: "Gemini", provider: "gemini" as Provider, logo: "/logos/gemini.svg" },
+	{
+		name: "GitHub Copilot",
+		provider: "copilot" as Provider,
+		logo: "/logos/copilot.svg",
+	},
 	{ name: "Qwen", provider: "qwen" as Provider, logo: "/logos/qwen.png" },
 	{ name: "iFlow", provider: "iflow" as Provider, logo: "/logos/iflow.svg" },
 	{
@@ -160,6 +169,8 @@ export function DashboardPage() {
 		agentName: string;
 		models?: AvailableModel[];
 	} | null>(null);
+	// Copilot device code modal state
+	const [copilotDeviceCode, setCopilotDeviceCode] = createSignal<CopilotDeviceCode | null>(null);
 	// No dismiss state - onboarding stays until setup complete
 	// Use centralized store for history
 	const history = requestStore.history;
@@ -234,9 +245,36 @@ export function DashboardPage() {
 			}, 1000);
 		});
 
+		// Listen for Copilot device code events (for OAuth flow)
+		const unlistenDeviceCode = await onCopilotDeviceCode((deviceCode) => {
+			setCopilotDeviceCode(deviceCode);
+		});
+
+		// Listen for Copilot connected events
+		const unlistenConnected = await onCopilotConnected(async (data) => {
+			setCopilotDeviceCode(null); // Close the modal
+			setConnecting(null);
+			const newAuth = await refreshAuthStatus();
+			setAuthStatus(newAuth);
+			setRecentlyConnected((prev) => new Set([...prev, "copilot"]));
+			setTimeout(() => {
+				setRecentlyConnected((prev) => {
+					const next = new Set(prev);
+					next.delete("copilot");
+					return next;
+				});
+			}, 2000);
+			toastStore.success(
+				"GitHub Copilot connected!",
+				`Logged in as ${data.user}`,
+			);
+		});
+
 		// Cleanup listener on unmount
 		onCleanup(() => {
 			unlisten();
+			unlistenDeviceCode();
+			unlistenConnected();
 		});
 	});
 
@@ -330,7 +368,10 @@ export function DashboardPage() {
 		try {
 			const oauthState = await openOAuth(provider);
 			let attempts = 0;
-			const maxAttempts = 120;
+			// Copilot uses GitHub device code flow which requires 5+ second intervals
+			const isCopilot = provider === "copilot";
+			const maxAttempts = isCopilot ? 60 : 120;
+			const intervalMs = isCopilot ? 5000 : 1000;
 			const pollInterval = setInterval(async () => {
 				attempts++;
 				try {
@@ -360,7 +401,7 @@ export function DashboardPage() {
 				} catch (err) {
 					console.error("Poll error:", err);
 				}
-			}, 1000);
+			}, intervalMs);
 			onCleanup(() => clearInterval(pollInterval));
 		} catch (error) {
 			console.error("Failed to start OAuth:", error);
@@ -1019,6 +1060,19 @@ export function DashboardPage() {
 					</Show>
 				</div>
 			</main>
+
+			{/* Copilot Device Code Modal */}
+			<Show when={copilotDeviceCode()}>
+				<CopilotDeviceCodeModal
+					userCode={copilotDeviceCode()!.userCode}
+					verificationUri={copilotDeviceCode()!.verificationUri}
+					expiresAt={copilotDeviceCode()!.expiresAt}
+					onClose={() => {
+						setCopilotDeviceCode(null);
+						setConnecting(null);
+					}}
+				/>
+			</Show>
 		</div>
 	);
 }
